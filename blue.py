@@ -3,9 +3,11 @@
 import bluetooth
 import logging
 import time
+import threading
 
 RFCOMM_CHANNEL = 1
-HFP_TIMEOUT = 5.0
+HFP_TIMEOUT = 1.0
+HFP_INIT_TIMEOUT = 3.0
 
 class HFPException(Exception):
     pass
@@ -15,7 +17,7 @@ class HFPDevice:
 		self.hfp = bluetooth.BluetoothSocket(bluetooth.RFCOMM) 
 		self.hfp.connect((addr, RFCOMM_CHANNEL))
 
-		self.hfp.settimeout(HFP_TIMEOUT)
+		self.hfp.settimeout(HFP_INIT_TIMEOUT)
 
 		if b'AT+BRSF=' not in self._read_at():
 			raise HFPException('Expect AT+BRSF command in initialisation')
@@ -36,50 +38,65 @@ class HFPDevice:
 			raise HFPException('Expect AT+CMER command in initialisation')
 		self._send_ok()
 
-		# Optional fields
-		if b'AT+CHLD=?\r' == self._read_at():
-			self._send_at(b'+CHLD: 0')
-			self._send_ok()
+		self.hfp.settimeout(HFP_TIMEOUT)
+		self.pt = threading.Thread(target=self.parse_channel)
+		self.pt.start()
 
-		self.hfp.settimeout(None)
-
-		logging.info('HFP connection is established')
+		logging.info('HSP/HFP connection is established')
 
 		self.audio = bluetooth.BluetoothSocket(bluetooth.SCO) 
 		self.audio.connect((addr,))
-
 		logging.info('Audio connection is established')
 
+	def parse_channel(self):
+		while self.pt:
+			data = self._read_at()
+			if not data:
+				return
+			if data == b'AT+CHLD=?\r':
+				self._send_at(b'+CHLD: 0')
+				self._send_ok()
+			else:
+				self._send_error()
 
 	def _read_at(self):
 		try:
-			return self.hfp.recv(1024)
+			d = self.hfp.recv(1024)
+			logging.debug('> ' + d.decode('utf8'))
+			return d
 		except bluetooth.btcommon.BluetoothError:
 			return None
 
 	def _send(self, data):
+		logging.debug('< ' + data.decode('utf8').replace('\r\n', ''))
 		self.hfp.send(data)
 
 	def _send_at(self, data):
-		self._send(data + b'\r')
-
-	def _send_result(self, data):
-		self._send_at(b'\r\n' + data + b'\r\n')
+		self._send(b'\r\n' + data + b'\r\n')
 
 	def _send_ok(self):
-		self._send_result(b'OK')
+		self._send_at(b'OK')
 
 	def _send_error(self):
-		self._send_result(b'ERROR')
+		self._send_at(b'ERROR')
 
 	def close(self):
+		self.audio.close()
 		self.hfp.close()
+		t = self.pt
+		self.pt = None
+		t.join()
 
 	def read(self, size):
 		return self.audio.recv(size)
 
 	def write(self, data):
 		return self.audio.send(data)
+
+
+def demo_ring(hf):
+	time.sleep(1)
+	hf._send_at(b'RING')
 
 def main():
 	#nearby_devices = bluetooth.discover_devices(duration=4,lookup_names=True,
@@ -89,17 +106,19 @@ def main():
 
 	hf = HFPDevice('00:13:7B:4A:51:F5')
 
+	#threading.Thread(target=demo_ring, args=[hf]).start()
 	try:
 		while True:
-			#time.sleep(0.5)
-			d = hf.read(8096);
+			time.sleep(0.01)
+			#d = hf.read(1024);
 			#print('Got audio ' + str(len(d)))
-			#hf.write(d)
+			hf.write(b'zAzzzAzAzzzAzAzzzAzAzzzAzAzzzAzAzzzA')#d)
 			#print('Sent audio')
 	except KeyboardInterrupt:
 		pass
 	hf.close()
-	logging.info('Exiting...')
+	logging.info('\nExiting...')
 
 if __name__ == '__main__':
 	main()
+
