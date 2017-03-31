@@ -5,6 +5,7 @@ import logging
 import time
 import threading
 import struct
+import sys
 
 RFCOMM_CHANNEL = 1
 HFP_TIMEOUT = 1.0
@@ -52,6 +53,7 @@ class HFPDevice:
 		logging.info('HSP/HFP connection is established')
 
 		self.audio = bluetooth.BluetoothSocket(bluetooth.SCO)
+		# optional socket config
 		opt = struct.pack ("H", BT_VOICE_CVSD_16BIT)
 		self.audio.setsockopt(SOL_BLUETOOTH, BT_VOICE, opt)
 		self.audio.connect((addr,))
@@ -108,21 +110,27 @@ def demo_ring(hf):
 	hf._send_at(b'RING')
 
 def main():
-	#nearby_devices = bluetooth.discover_devices(duration=4,lookup_names=True,
-	#	flush_cache=True, lookup_class=False)
-	#print(nearby_devices)
 	logging.basicConfig(level=logging.DEBUG, format='%(message)s')
 
-	hf = HFPDevice('00:13:7B:4A:51:F5')
+	if len(sys.argv) == 1:
+		print("Please specify device MAC address or 'scan' to scan it.")
+		sys.exit(1)
+	if sys.argv[1] == 'scan':
+		nearby_devices = bluetooth.discover_devices(duration=4,lookup_names=True,
+			flush_cache=True, lookup_class=False)
+		print(nearby_devices)
+		return
+	hf = HFPDevice(sys.argv[1])
 
+	# Make a test RING from headset
 	#threading.Thread(target=demo_ring, args=[hf]).start()
 	try:
 		while True:
-			time.sleep(0.01)
-			#d = hf.read(1024);
-			#print('Got audio ' + str(len(d)))
-			hf.write(b'zAzzzAzAzzzAzAzzzAzAzzzAzAzzzAzAzzzAzAzzzAzAzzzA')#d)
-			#print('Sent audio')
+			# 48 is a typical MTU
+			d = hf.read(48)
+			hf.write(d)
+			# generate noise
+			#hf.write(bytes(i for i in range(48)))
 	except KeyboardInterrupt:
 		pass
 	hf.close()
