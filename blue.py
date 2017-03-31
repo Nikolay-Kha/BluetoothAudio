@@ -4,10 +4,17 @@ import bluetooth
 import logging
 import time
 import threading
+import struct
 
 RFCOMM_CHANNEL = 1
 HFP_TIMEOUT = 1.0
 HFP_INIT_TIMEOUT = 3.0
+
+#from bluetooth.h
+SOL_BLUETOOTH = 274
+BT_VOICE = 11
+BT_VOICE_TRANSPARENT = 0x0003
+BT_VOICE_CVSD_16BIT = 0x0060
 
 class HFPException(Exception):
     pass
@@ -44,7 +51,9 @@ class HFPDevice:
 
 		logging.info('HSP/HFP connection is established')
 
-		self.audio = bluetooth.BluetoothSocket(bluetooth.SCO) 
+		self.audio = bluetooth.BluetoothSocket(bluetooth.SCO)
+		opt = struct.pack ("H", BT_VOICE_CVSD_16BIT)
+		self.audio.setsockopt(SOL_BLUETOOTH, BT_VOICE, opt)
 		self.audio.connect((addr,))
 		logging.info('Audio connection is established')
 
@@ -112,7 +121,7 @@ def main():
 			time.sleep(0.01)
 			#d = hf.read(1024);
 			#print('Got audio ' + str(len(d)))
-			hf.write(b'zAzzzAzAzzzAzAzzzAzAzzzAzAzzzAzAzzzA')#d)
+			hf.write(b'zAzzzAzAzzzAzAzzzAzAzzzAzAzzzAzAzzzAzAzzzAzAzzzA')#d)
 			#print('Sent audio')
 	except KeyboardInterrupt:
 		pass
