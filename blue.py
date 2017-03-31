@@ -9,7 +9,7 @@ import sys
 
 RFCOMM_CHANNEL = 1
 HFP_TIMEOUT = 1.0
-HFP_INIT_TIMEOUT = 3.0
+HFP_INIT_TIMEOUT = 10.0
 
 #from bluetooth.h
 SOL_BLUETOOTH = 274
@@ -22,7 +22,8 @@ class HFPException(Exception):
 
 class HFPDevice:
 	def __init__(self, addr):
-		self.hfp = bluetooth.BluetoothSocket(bluetooth.RFCOMM) 
+		self.hfp = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
+		# TODO discover service and take channel from there
 		self.hfp.connect((addr, RFCOMM_CHANNEL))
 
 		self.hfp.settimeout(HFP_INIT_TIMEOUT)
@@ -119,6 +120,9 @@ def main():
 		nearby_devices = bluetooth.discover_devices(duration=4,lookup_names=True,
 			flush_cache=True, lookup_class=False)
 		print(nearby_devices)
+		return
+	if not bluetooth.is_valid_address(sys.argv[1]):
+		print("Wrong device address.")
 		return
 	hf = HFPDevice(sys.argv[1])
 
