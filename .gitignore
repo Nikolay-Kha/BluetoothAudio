@@ -1,0 +1,5 @@
+*__pycache__*
+snap/parts
+snap/prime
+snap/stage
+snap/*.snap

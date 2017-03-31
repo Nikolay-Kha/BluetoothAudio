@@ -1,0 +1,27 @@
+name: blue
+version: "1.0"
+summary: Bluetooth HSP/HFP test
+description: Loopback sound in bluetooth headset
+confinement: strict
+
+apps:
+  blue-run:
+    command: bin/blue.py
+    plugs: [network, network-bind, bluetooth-control, bluez]
+
+parts:
+  python-hyper:
+    plugin: python
+    python-version: python3
+    python-packages: [pybluez]
+  pyblue:
+    plugin: dump
+    source: ..
+    organize:
+      blue.py: bin/blue.py
+    stage-packages:
+      - bluez
+    build-packages:
+      - gcc
+      - libbluetooth-dev
+
