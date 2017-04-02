@@ -13,7 +13,7 @@ AT command specs http://www.3gpp.org/ftp/Specs/archive/07_series/07.07/0707-780.
 
 # Dependencies
 ```
-sudo apt-get install libbluetooth-dev
+sudo apt install libbluetooth-dev gcc python3-dev python3-pip
 sudo pip3 install pybluez
 ```
 

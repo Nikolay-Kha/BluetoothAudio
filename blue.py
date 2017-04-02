@@ -7,69 +7,104 @@ import threading
 import struct
 import sys
 
-RFCOMM_CHANNEL = 1
 HFP_TIMEOUT = 1.0
-HFP_INIT_TIMEOUT = 10.0
+HFP_CONNECT_AUDIO_TIMEOUT = 10.0
 
-#from bluetooth.h
+# from specs
 SOL_BLUETOOTH = 274
 BT_VOICE = 11
 BT_VOICE_TRANSPARENT = 0x0003
 BT_VOICE_CVSD_16BIT = 0x0060
+L2CAP_UUID = "0100"
 
-class HFPException(Exception):
+class HFPException(bluetooth.btcommon.BluetoothError):
     pass
 
 class HFPDevice:
 	def __init__(self, addr):
+		self.audio = None
+		self.addr = addr
+		channel = self._find_channel(addr)
+		if not channel:
+			raise HFPException('HSP/HFP not found')
+		logging.info('HSP/HFP found on RFCOMM channel ' + str(channel))
+
 		self.hfp = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
-		# TODO discover service and take channel from there
-		self.hfp.connect((addr, RFCOMM_CHANNEL))
-
-		self.hfp.settimeout(HFP_INIT_TIMEOUT)
-
-		if b'AT+BRSF=' not in self._read_at():
-			raise HFPException('Expect AT+BRSF command in initialisation')
-		self._send_at(b'+BRSF: 0')
-		self._send_ok()
-
-		if b'AT+CIND=?\r' != self._read_at():
-			raise HFPException('Expect AT+CIND=? command in initialisation')
-		self._send_at(b'+CIND: ("service",(0,1)),("call",(0,1))')
-		self._send_ok()
-
-		if b'AT+CIND?\r' != self._read_at():
-			raise HFPException('Expect AT+CIND? command in initialisation')
-		self._send_at(b'+CIND: 1,0')
-		self._send_ok()
-
-		if b'AT+CMER=' not in self._read_at():
-			raise HFPException('Expect AT+CMER command in initialisation')
-		self._send_ok()
-
+		try:
+			self.hfp.connect((addr, channel))
+		except bluetooth.btcommon.BluetoothError as e:
+			self.hfp.close()
+			raise HFPException('Failed to establish ervice level connection: ' + str(e))
 		self.hfp.settimeout(HFP_TIMEOUT)
 		self.pt = threading.Thread(target=self.parse_channel)
 		self.pt.start()
-
-		logging.info('HSP/HFP connection is established')
-
-		self.audio = bluetooth.BluetoothSocket(bluetooth.SCO)
-		# optional socket config
-		opt = struct.pack ("H", BT_VOICE_CVSD_16BIT)
-		self.audio.setsockopt(SOL_BLUETOOTH, BT_VOICE, opt)
-		self.audio.connect((addr,))
-		logging.info('Audio connection is established')
+		logging.info('HSP/HFP service level connection is established')
 
 	def parse_channel(self):
+		audio_time = time.time() + HFP_CONNECT_AUDIO_TIMEOUT
+		sevice_notice = True
 		while self.pt:
 			data = self._read_at()
-			if not data:
+			if data:
+				if b'AT+BRSF=' in data:
+					self._send_at(b'+BRSF: 0')
+					self._send_ok()
+				elif b'AT+CIND=?\r' == data:
+					self._send_at(b'+CIND: ("service",(0,1)),("call",(0,1))')
+					self._send_ok()
+				elif b'AT+CIND?\r' == data:
+					self._send_at(b'+CIND: 1,0')
+					self._send_ok()
+				elif b'AT+CMER=' in data:
+					self._send_ok()
+					# after this command we can establish audio connection
+					sevice_notice = False
+					self._connect_audio()
+				elif b'AT+CHLD=?\r' == data:
+					self._send_at(b'+CHLD: 0')
+					self._send_ok()
+				else:
+					self._send_error()
+			# if we don't get service level connection, try audio anyway
+			if not self.audio:
+				if audio_time < time.time():
+					if sevice_notice:
+						logging.warning('Service connection timed out, try audio anyway...')
+						sevice_notice = False
+					self._connect_audio();
+
+	def _connect_audio(self):
+		if not self.audio:
+			audio = bluetooth.BluetoothSocket(bluetooth.SCO)
+			# socket config
+			opt = struct.pack ("H", BT_VOICE_CVSD_16BIT)
+			audio.setsockopt(SOL_BLUETOOTH, BT_VOICE, opt)
+			try:
+				audio.connect((self.addr,))
+			except bluetooth.btcommon.BluetoothError as e:
+				audio.close()
+				logging.info('Failed to establish audio connection: ' + str(e))
 				return
-			if data == b'AT+CHLD=?\r':
-				self._send_at(b'+CHLD: 0')
-				self._send_ok()
-			else:
-				self._send_error()
+			logging.info('Audio connection is established')
+			self.audio = audio
+
+	def _find_channel(self, addr):
+		# discovery RFCOMM channell, prefer HFP.
+		hsp_channel = None
+		generic_channel = None
+		services = bluetooth.find_service(address=addr, uuid=L2CAP_UUID)
+		for svc in services:
+			for c in svc["service-classes"]:
+				service_class = c.lower()
+				if bluetooth.HANDSFREE_CLASS.lower() == service_class:
+					return int(svc["port"])
+				elif bluetooth.HEADSET_CLASS.lower() == service_class:
+					hsp_channel = int(svc["port"])
+				elif bluetooth.GENERIC_AUDIO_CLASS.lower() == service_class:
+					generic_channel = int(svc["port"])
+		if hsp_channel:
+			return hsp_channel
+		return generic_channel
 
 	def _read_at(self):
 		try:
@@ -93,16 +128,21 @@ class HFPDevice:
 		self._send_at(b'ERROR')
 
 	def close(self):
-		self.audio.close()
+		if self.audio:
+			self.audio.close()
 		self.hfp.close()
 		t = self.pt
 		self.pt = None
 		t.join()
 
 	def read(self, size):
+		if not self.audio:
+			return None
 		return self.audio.recv(size)
 
 	def write(self, data):
+		if not self.audio:
+			return 0
 		return self.audio.send(data)
 
 
@@ -132,7 +172,8 @@ def main():
 		while True:
 			# 48 is a typical MTU
 			d = hf.read(48)
-			hf.write(d)
+			if d:
+				hf.write(d)
 			# generate noise
 			#hf.write(bytes(i for i in range(48)))
 	except KeyboardInterrupt:
