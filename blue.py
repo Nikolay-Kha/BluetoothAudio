@@ -12,9 +12,11 @@ HFP_CONNECT_AUDIO_TIMEOUT = 10.0
 
 # from specs
 SOL_BLUETOOTH = 274
+SOL_SCO = 17
 BT_VOICE = 11
 BT_VOICE_TRANSPARENT = 0x0003
 BT_VOICE_CVSD_16BIT = 0x0060
+SCO_OPTIONS = 1
 L2CAP_UUID = "0100"
 
 class HFPException(bluetooth.btcommon.BluetoothError):
@@ -85,7 +87,9 @@ class HFPDevice:
 				audio.close()
 				logging.info('Failed to establish audio connection: ' + str(e))
 				return
-			logging.info('Audio connection is established')
+			opt = audio.getsockopt(SOL_SCO, SCO_OPTIONS, 2)
+			self.mtu = struct.unpack('H', opt)[0]
+			logging.info('Audio connection is established, mtu = ' + str(self.mtu))
 			self.audio = audio
 
 	def _find_channel(self, addr):
@@ -135,10 +139,10 @@ class HFPDevice:
 		self.pt = None
 		t.join()
 
-	def read(self, size):
+	def read(self):
 		if not self.audio:
 			return None
-		return self.audio.recv(size)
+		return self.audio.recv(self.mtu)
 
 	def write(self, data):
 		if not self.audio:
@@ -170,8 +174,7 @@ def main():
 	#threading.Thread(target=demo_ring, args=[hf]).start()
 	try:
 		while True:
-			# 48 is a typical MTU
-			d = hf.read(48)
+			d = hf.read()
 			if d:
 				hf.write(d)
 			# generate noise
