@@ -8,11 +8,12 @@ Upd: BCM20702 need proprietary firmware on Linux - http://plugable.com/2014/06/2
 This project was tested with CSR bluetooth 4.0 USB dongle.
 
 # Usage
-Turn your headset/handsfree device into advertisement mode. Run `./blue.py scan` and wait for scan results which would be like:
+Turn your headset/handsfree device into advertisement mode. Run `./bluetooth_audio.py scan` and wait for scan results which would be like:
 ```
 [('00:12:34:56:78:F5', 'SBH-100'), ('12:33:44:55:66:4A', 'ABRC-100')]
 ```
-find you device MAC address in this list. You need to do it just once. Having MAC, just run `./blue.py 00:12:34:56:78:F5` to run loopback sound in your device.
+find you device MAC address in this list. You need to do it just once. Having MAC, just run `./bluetooth_audio.py 00:12:34:56:78:F5` to run loopback sound in your device.  
+Also it's totally possible to import bluetooth_audio.py into your project and use BluetoothAudio class.
 
 # Specs
 HFP v1.7 specs https://www.bluetooth.org/docman/handlers/downloaddoc.ashx?doc_id=292287  

@@ -7,9 +7,6 @@ import threading
 import struct
 import sys
 
-HFP_TIMEOUT = 1.0
-HFP_CONNECT_AUDIO_TIMEOUT = 10.0
-
 # from specs
 SOL_BLUETOOTH = 274
 SOL_SCO = 17
@@ -19,11 +16,18 @@ BT_VOICE_CVSD_16BIT = 0x0060
 SCO_OPTIONS = 1
 L2CAP_UUID = "0100"
 
-class HFPException(bluetooth.btcommon.BluetoothError):
-    pass
+class BluetoothAudio:
+	""" This object connect to Bluetooth handset/nandsfree device
+	    stream audio from microphone and to speaker.
+	"""
+	HFP_TIMEOUT = 1.0
+	HFP_CONNECT_AUDIO_TIMEOUT = 10.0
 
-class HFPDevice:
 	def __init__(self, addr):
+		""" Create object which connects to bluetooth device in the background.
+		    Class automatically reconnects to the device in case of any errors.
+		:param addr: MAC address of Bluetooth device, string.
+		"""
 		self.audio = None
 		self.hfp = None
 		self.addr = addr
@@ -35,22 +39,22 @@ class HFPDevice:
 		while self.pt:
 			self._find_channel()
 			if not self.channel:
-				time.sleep(HFP_TIMEOUT)
+				time.sleep(self.HFP_TIMEOUT)
 				continue
 			logging.info('HSP/HFP found on RFCOMM channel ' + str(self.channel))
 			self._connect_service_level()
 			if not self.hfp:
-				time.sleep(HFP_TIMEOUT)
+				time.sleep(self.HFP_TIMEOUT)
 				continue
 			try:
 				self._parse_channel()
 			except bluetooth.btcommon.BluetoothError as e:
 				logging.warning('Service level connection disconnected: ' + str(e))
-				time.sleep(HFP_TIMEOUT)
+				time.sleep(self.HFP_TIMEOUT)
 			self._cleanup()
 
 	def _parse_channel(self):
-		audio_time = time.time() + HFP_CONNECT_AUDIO_TIMEOUT
+		audio_time = time.time() + self.HFP_CONNECT_AUDIO_TIMEOUT
 		sevice_notice = True
 		while self.pt:
 			data = self._read_at()
@@ -90,7 +94,7 @@ class HFPDevice:
 			hfp.close()
 			logging.warning('Failed to establish service level connection: ' + str(e))
 			return
-		hfp.settimeout(HFP_TIMEOUT)
+		hfp.settimeout(self.HFP_TIMEOUT)
 		logging.info('HSP/HFP service level connection is established')
 		self.hfp = hfp
 
@@ -167,7 +171,16 @@ class HFPDevice:
 		t.join()
 		self._cleanup()
 
+	def is_connected(self):
+		""" Check if headset/handfree device is connected.
+		:return: True if connected, False otherwise.
+		"""
+		return (self.audio != None)
+
 	def read(self):
+		""" Receive audio from bluetooth device.
+		:return: Array with audio data or None on error.
+		"""
 		if not self.audio:
 			return None
 		try:
@@ -176,6 +189,10 @@ class HFPDevice:
 			return None
 
 	def write(self, data):
+		""" Send audio data to bluetooth device.
+		:param data: array with audio data.
+		:return: number of bytes written or None on error.
+		"""
 		if not self.audio:
 			return None
 		try:
@@ -189,6 +206,9 @@ def demo_ring(hf):
 	hf._send_at(b'RING')
 
 def main():
+	""" Sample of usage BluetoothAudio.
+	    This sample loopback audio from microphone to speaker.
+	"""
 	logging.basicConfig(level=logging.DEBUG, format='%(message)s')
 
 	if len(sys.argv) == 1:
@@ -202,7 +222,7 @@ def main():
 	if not bluetooth.is_valid_address(sys.argv[1]):
 		print("Wrong device address.")
 		return
-	hf = HFPDevice(sys.argv[1])
+	hf = BluetoothAudio(sys.argv[1])
 
 	# Make a test RING from headset
 	#threading.Thread(target=demo_ring, args=[hf]).start()
