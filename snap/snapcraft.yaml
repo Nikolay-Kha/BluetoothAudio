@@ -6,7 +6,7 @@ confinement: strict
 
 apps:
   blue-run:
-    command: bin/blue.py
+    command: bin/bluetooth_audio.py
     plugs: [network, network-bind, bluetooth-control, bluez]
 
 parts:
@@ -18,7 +18,7 @@ parts:
     plugin: dump
     source: ..
     organize:
-      blue.py: bin/blue.py
+      bluetooth_audio.py: bin/bluetooth_audio.py
     stage-packages:
       - bluez
     build-packages:
