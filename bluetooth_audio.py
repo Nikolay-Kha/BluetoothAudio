@@ -26,8 +26,9 @@ class BluetoothAudio:
 	HFP_CONNECT_AUDIO_TIMEOUT = 10.0
 	AUDIO_8KHZ_SIGNED_8BIT_MONO = 0
 	AUDIO_16KHZ_SIGNED_16BIT_LE_MONO = 1
+	CAPTURE_BUFFER_MAX_SIZE = 16777216 # 16 Mb
 
-	def __init__(self, addr):
+	def __init__(self, addr, format = AUDIO_8KHZ_SIGNED_8BIT_MONO):
 		""" Create object which connects to bluetooth device in the background.
 		    Class automatically reconnects to the device in case of any errors.
 		:param addr: MAC address of Bluetooth device, string.
@@ -35,12 +36,48 @@ class BluetoothAudio:
 		self.audio = None
 		self.hfp = None
 		self.addr = addr
-		self.pt = threading.Thread(target=self._worker_loop)
-		self.pt.start()
+		self.resample = (format == self.AUDIO_16KHZ_SIGNED_16BIT_LE_MONO)
+		self.wlt = threading.Thread(target=self._worker_loop)
+		self.wlt.start()
+		self.buf =  bytes()
+		self.rlt = None
+		self.rltl = threading.Lock()
+
+	def _read_loop(self):
+		logging.info('Read loop start')
+		self.buf = bytes()
+		while self.rlt:
+			try:
+				data_8s8b = self.audio.recv(self.sco_payload)
+			except bluetooth.btcommon.BluetoothError:
+				data_8s8b = None
+			if not data_8s8b or len(data_8s8b) == 0:
+				self.audio.close()
+				self.audio = None
+				logging.warning('Capture audio failed')
+				break
+			if self.resample:
+				# convert data
+				data = bytes()
+				for v in data_8s8b:
+					# convert from 8 kHz signed 8 bit to 16 kHz signed 16 bit le
+					if v > 127:
+						v = v - 256
+					v = v * 256
+					data += struct.pack('<hh', v, v)
+			else:
+				data = data_8s8b
+			self.rltl.acquire(True)
+			if len(self.buf) > self.CAPTURE_BUFFER_MAX_SIZE:
+				logging.warning('Capture buffer overflow')
+				self.buf = bytes()
+			self.buf += data
+			self.rltl.release()
+		logging.info('Read loop stop')
 
 	def _worker_loop(self):
 		logging.info('HFPDevice class is initialised')
-		while self.pt:
+		while self.wlt:
 			self._find_channel()
 			if not self.channel:
 				time.sleep(self.HFP_TIMEOUT)
@@ -60,7 +97,7 @@ class BluetoothAudio:
 	def _parse_channel(self):
 		audio_time = time.time() + self.HFP_CONNECT_AUDIO_TIMEOUT
 		sevice_notice = True
-		while self.pt:
+		while self.wlt:
 			data = self._read_at()
 			if data:
 				if b'AT+BRSF=' in data:
@@ -117,6 +154,8 @@ class BluetoothAudio:
 		mtu = struct.unpack('H', opt)[0]
 		self.audio = audio
 		self.sco_payload = mtu - SCO_HEADERS_SIZE
+		self.rlt = threading.Thread(target=self._read_loop)
+		self.rlt.start()
 		logging.info('Audio connection is established, mtu = ' + str(mtu))
 
 	def _find_channel(self):
@@ -163,6 +202,10 @@ class BluetoothAudio:
 		self._send_at(b'ERROR')
 
 	def _cleanup(self):
+		if self.rlt:
+			rlt = self.rlt
+			self.rlt = None
+			rlt.join()
 		if self.audio:
 			self.audio.close()
 		if self.hfp:
@@ -171,9 +214,9 @@ class BluetoothAudio:
 		self.audio = None
 
 	def close(self):
-		t = self.pt
-		self.pt = None
-		t.join()
+		wlt = self.wlt
+		self.wlt = None
+		wlt.join()
 		self._cleanup()
 
 	def is_connected(self):
@@ -182,29 +225,46 @@ class BluetoothAudio:
 		"""
 		return (self.audio != None)
 
-	def read(self, format = AUDIO_8KHZ_SIGNED_8BIT_MONO):
+	def flush(self):
+		""" Clean up capture buffer
+		"""
+		self.rltl.acquire(True)
+		self.buf = bytes()
+		self.rltl.release()
+
+	def read(self, length = None):
 		""" Receive audio from bluetooth device. Block until read something.
+		:param length: number of bytes(not samples) to read, not more then CAPTURE_BUFFER_MAX_SIZE.
+		               If None or 0, all aviliable will be read
 		:return: Array with audio data(16 kHz signed 16 bit little endian mono data) or None on error.
 		"""
-		if not self.audio:
+		if not self.rlt:
 			return None
-		try:
-			data_8s8m = self.audio.recv(self.sco_payload)
-			if format == self.AUDIO_8KHZ_SIGNED_8BIT_MONO:
-				return data_8s8m
-			# convert data
-			snd = bytes()
-			for v in data_8s8m:
-				# convert from 8 kHz signed 8 bit to 16 kHz signed 16 bit le
-				if v > 127:
-					v = v - 256
-				v = v * 256
-				snd += struct.pack('<hh', v, v)
-			return snd
-		except bluetooth.btcommon.BluetoothError:
-			return None
+		if length == None:
+			length = 0
+		while len(self.buf) == 0 or len(self.buf) < length:
+			if not self.rlt:
+				return None
+			if not self.rlt.isAlive():
+				return None
+			s = (length - len(self.buf)) / 8000
+			if s <= 0:
+				self.rlt.join(0.001)
+			else:
+				if self.resample:
+					s = s / 2
+				self.rlt.join(s)
+		self.rltl.acquire(True)
+		if length == 0:
+			data = self.buf
+			self.buf = bytes()
+		else:
+			data = self.buf[0:length]
+			self.buf =self.buf[length:]
+		self.rltl.release()
+		return data
 
-	def write(self, data, format = AUDIO_8KHZ_SIGNED_8BIT_MONO):
+	def write(self, data):
 		""" Send audio data to bluetooth device. Blocking.
 		:param data: array with audio data.
 		:param format: audio fromat, for example AUDIO_8KHZ_SIGNED_8BIT_MONO or AUDIO_16KHZ_SIGNED_16BIT_LE_MONO.
@@ -213,15 +273,15 @@ class BluetoothAudio:
 		if not self.audio:
 			return False
 		try:
-			if format == self.AUDIO_8KHZ_SIGNED_8BIT_MONO:
-				data_8s8m = data
-			else:
+			if self.resample:
 				# convert data
 				data_8s8m = bytes()
 				for i in range(0, len(data), 4):
 					val1, val2 = struct.unpack_from('<hh', data, i) # two samples of signed 16 bit le
 					val = round((val1 + val2) / 512) # downsample to 8 kHz and turn into 8 bit
 					data_8s8m += struct.pack('b', val)
+			else:
+				data_8s8m = data
 			sent = 0
 			while sent < len(data_8s8m):
 				ts = data_8s8m[sent:(sent+int(self.sco_payload))]
@@ -231,14 +291,19 @@ class BluetoothAudio:
 			return True
 		except bluetooth.btcommon.BluetoothError:
 			return False
+		except AttributeError: # 'NoneType' object has no attribute 'send'
+			return False
 
 	def beep(self, length_ms = 300, frequency = 1000.0, amplitude = 0.5):
 		""" Make a beep sound with specified parameters
 		:return: True on success, False on error.
 		"""
+		fps = 8000
+		if self.resample:
+			fps = 16000
 		logging.info('Beep {} Hz, {} ms'.format(frequency, length_ms))
-		period = int(8000 / frequency)
-		length = int(8000 * length_ms / 1000)
+		period = int(fps / frequency)
+		length = int(fps * length_ms / 1000)
 		snd = bytes()
 		for i in range(0, length):
 			val = 32767.0 * amplitude * math.sin(2.0 * math.pi * float(i % period) / period)
@@ -267,7 +332,7 @@ def main():
 	if not bluetooth.is_valid_address(sys.argv[1]):
 		print("Wrong device address.")
 		return
-	hf = BluetoothAudio(sys.argv[1])
+	hf = BluetoothAudio(sys.argv[1], BluetoothAudio.AUDIO_16KHZ_SIGNED_16BIT_LE_MONO)
 
 	# Make a test RING from headset
 	#threading.Thread(target=demo_ring, args=[hf]).start()
@@ -276,12 +341,16 @@ def main():
 			time.sleep(0.1)
 		time.sleep(1.5)
 		hf.beep()
+		time.sleep(0.5)
+		hf.flush()
 		while True:
-			d = hf.read(BluetoothAudio.AUDIO_16KHZ_SIGNED_16BIT_LE_MONO)
+			d = hf.read()
 			if d:
-				hf.write(d, BluetoothAudio.AUDIO_16KHZ_SIGNED_16BIT_LE_MONO)
+				hf.write(d)
+			else:
+				time.sleep(0.5)
 			# generate noise
-			#hf.write(bytes(i for i in range(48)))
+			#hf.write(bytes(i for i in range(hf.sco_payload)))
 	except KeyboardInterrupt:
 		pass
 	hf.close()
