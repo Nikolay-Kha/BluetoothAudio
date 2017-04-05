@@ -6,6 +6,7 @@ import time
 import threading
 import struct
 import sys
+import math
 
 # from specs
 SOL_BLUETOOTH = 274
@@ -15,6 +16,7 @@ BT_VOICE_TRANSPARENT = 0x0003
 BT_VOICE_CVSD_16BIT = 0x0060
 SCO_OPTIONS = 1
 L2CAP_UUID = "0100"
+SCO_HEADERS_SIZE = 16
 
 class BluetoothAudio:
 	""" This object connect to Bluetooth handset/nandsfree device
@@ -22,6 +24,8 @@ class BluetoothAudio:
 	"""
 	HFP_TIMEOUT = 1.0
 	HFP_CONNECT_AUDIO_TIMEOUT = 10.0
+	AUDIO_8KHZ_SIGNED_8BIT_MONO = 0
+	AUDIO_16KHZ_SIGNED_16BIT_LE_MONO = 1
 
 	def __init__(self, addr):
 		""" Create object which connects to bluetooth device in the background.
@@ -110,9 +114,10 @@ class BluetoothAudio:
 			logging.info('Failed to establish audio connection: ' + str(e))
 			return
 		opt = audio.getsockopt(SOL_SCO, SCO_OPTIONS, 2)
-		self.mtu = struct.unpack('H', opt)[0]
+		mtu = struct.unpack('H', opt)[0]
 		self.audio = audio
-		logging.info('Audio connection is established, mtu = ' + str(self.mtu))
+		self.sco_payload = mtu - SCO_HEADERS_SIZE
+		logging.info('Audio connection is established, mtu = ' + str(mtu))
 
 	def _find_channel(self):
 		# discovery RFCOMM channell, prefer HFP.
@@ -177,28 +182,68 @@ class BluetoothAudio:
 		"""
 		return (self.audio != None)
 
-	def read(self):
-		""" Receive audio from bluetooth device.
-		:return: Array with audio data or None on error.
+	def read(self, format = AUDIO_8KHZ_SIGNED_8BIT_MONO):
+		""" Receive audio from bluetooth device. Block until read something.
+		:return: Array with audio data(16 kHz signed 16 bit little endian mono data) or None on error.
 		"""
 		if not self.audio:
 			return None
 		try:
-			return self.audio.recv(self.mtu)
+			data_8s8m = self.audio.recv(self.sco_payload)
+			if format == self.AUDIO_8KHZ_SIGNED_8BIT_MONO:
+				return data_8s8m
+			# convert data
+			snd = bytes()
+			for v in data_8s8m:
+				# convert from 8 kHz signed 8 bit to 16 kHz signed 16 bit le
+				if v > 127:
+					v = v - 256
+				v = v * 256
+				snd += struct.pack('<hh', v, v)
+			return snd
 		except bluetooth.btcommon.BluetoothError:
 			return None
 
-	def write(self, data):
-		""" Send audio data to bluetooth device.
+	def write(self, data, format = AUDIO_8KHZ_SIGNED_8BIT_MONO):
+		""" Send audio data to bluetooth device. Blocking.
 		:param data: array with audio data.
-		:return: number of bytes written or None on error.
+		:param format: audio fromat, for example AUDIO_8KHZ_SIGNED_8BIT_MONO or AUDIO_16KHZ_SIGNED_16BIT_LE_MONO.
+		:return: True on success, False on error.
 		"""
 		if not self.audio:
-			return None
+			return False
 		try:
-			return self.audio.send(data)
+			if format == self.AUDIO_8KHZ_SIGNED_8BIT_MONO:
+				data_8s8m = data
+			else:
+				# convert data
+				data_8s8m = bytes()
+				for i in range(0, len(data), 4):
+					val1, val2 = struct.unpack_from('<hh', data, i) # two samples of signed 16 bit le
+					val = round((val1 + val2) / 512) # downsample to 8 kHz and turn into 8 bit
+					data_8s8m += struct.pack('b', val)
+			sent = 0
+			while sent < len(data_8s8m):
+				ts = data_8s8m[sent:(sent+int(self.sco_payload))]
+				if len(ts) < self.sco_payload:
+					ts += bytes([0] * (self.sco_payload - len(ts)))
+				sent += self.audio.send(ts)
+			return True
 		except bluetooth.btcommon.BluetoothError:
-			return None
+			return False
+
+	def beep(self, length_ms = 300, frequency = 1000.0, amplitude = 0.5):
+		""" Make a beep sound with specified parameters
+		:return: True on success, False on error.
+		"""
+		logging.info('Beep {} Hz, {} ms'.format(frequency, length_ms))
+		period = int(8000 / frequency)
+		length = int(8000 * length_ms / 1000)
+		snd = bytes()
+		for i in range(0, length):
+			val = 32767.0 * amplitude * math.sin(2.0 * math.pi * float(i % period) / period)
+			snd += struct.pack('<h', int(val))
+		return self.write(snd)
 
 
 def demo_ring(hf):
@@ -227,10 +272,14 @@ def main():
 	# Make a test RING from headset
 	#threading.Thread(target=demo_ring, args=[hf]).start()
 	try:
+		while not hf.is_connected():
+			time.sleep(0.1)
+		time.sleep(1.5)
+		hf.beep()
 		while True:
-			d = hf.read()
+			d = hf.read(BluetoothAudio.AUDIO_16KHZ_SIGNED_16BIT_LE_MONO)
 			if d:
-				hf.write(d)
+				hf.write(d, BluetoothAudio.AUDIO_16KHZ_SIGNED_16BIT_LE_MONO)
 			# generate noise
 			#hf.write(bytes(i for i in range(48)))
 	except KeyboardInterrupt:
