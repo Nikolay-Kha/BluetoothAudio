@@ -24,11 +24,11 @@ class BluetoothAudio:
 	"""
 	HFP_TIMEOUT = 1.0
 	HFP_CONNECT_AUDIO_TIMEOUT = 10.0
-	AUDIO_8KHZ_SIGNED_8BIT_MONO = 0
+	AUDIO_8KHZ_SIGNED_16BIT_LE_MONO = 0
 	AUDIO_16KHZ_SIGNED_16BIT_LE_MONO = 1
 	CAPTURE_BUFFER_MAX_SIZE = 16777216 # 16 Mb
 
-	def __init__(self, addr, format = AUDIO_8KHZ_SIGNED_8BIT_MONO):
+	def __init__(self, addr, format = AUDIO_8KHZ_SIGNED_16BIT_LE_MONO):
 		""" Create object which connects to bluetooth device in the background.
 		    Class automatically reconnects to the device in case of any errors.
 		:param addr: MAC address of Bluetooth device, string.
@@ -48,10 +48,10 @@ class BluetoothAudio:
 		self.buf = bytes()
 		while self.rlt:
 			try:
-				data_8s8b = self.audio.recv(self.sco_payload)
+				data_raw = self.audio.recv(self.sco_payload)
 			except bluetooth.btcommon.BluetoothError:
-				data_8s8b = None
-			if not data_8s8b or len(data_8s8b) == 0:
+				data_raw = None
+			if not data_raw or len(data_raw) == 0:
 				self.audio.close()
 				self.audio = None
 				logging.warning('Capture audio failed')
@@ -59,14 +59,12 @@ class BluetoothAudio:
 			if self.resample:
 				# convert data
 				data = bytes()
-				for v in data_8s8b:
-					# convert from 8 kHz signed 8 bit to 16 kHz signed 16 bit le
-					if v > 127:
-						v = v - 256
-					v = v * 256
+				for i in range(0, len(data_raw), 2):
+					# convert from 8 kHz signed 16 bit to 16 kHz signed 16 bit le
+					v = struct.unpack_from('<h', data_raw, i)[0]
 					data += struct.pack('<hh', v, v)
 			else:
-				data = data_8s8b
+				data = data_raw
 			self.rltl.acquire(True)
 			if len(self.buf) > self.CAPTURE_BUFFER_MAX_SIZE:
 				logging.warning('Capture buffer overflow')
@@ -76,7 +74,7 @@ class BluetoothAudio:
 		logging.info('Read loop stop')
 
 	def _worker_loop(self):
-		logging.info('HFPDevice class is initialised')
+		logging.info('HFPDevice class is initialised, using ' + self.addr)
 		while self.wlt:
 			self._find_channel()
 			if not self.channel:
@@ -275,16 +273,16 @@ class BluetoothAudio:
 		try:
 			if self.resample:
 				# convert data
-				data_8s8m = bytes()
+				data_raw = bytes()
 				for i in range(0, len(data), 4):
 					val1, val2 = struct.unpack_from('<hh', data, i) # two samples of signed 16 bit le
-					val = round((val1 + val2) / 512) # downsample to 8 kHz and turn into 8 bit
-					data_8s8m += struct.pack('b', val)
+					val = round((val1 + val2) / 2) # downsample to 8 kHz
+					data_raw += struct.pack('<h', val)
 			else:
-				data_8s8m = data
+				data_raw = data
 			sent = 0
-			while sent < len(data_8s8m):
-				ts = data_8s8m[sent:(sent+int(self.sco_payload))]
+			while sent < len(data_raw):
+				ts = data_raw[sent:(sent+int(self.sco_payload))]
 				if len(ts) < self.sco_payload:
 					ts += bytes([0] * (self.sco_payload - len(ts)))
 				sent += self.audio.send(ts)
