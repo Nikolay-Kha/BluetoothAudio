@@ -59,10 +59,12 @@ class BluetoothAudio:
 			if self.resample:
 				# convert data
 				data = bytes()
+				prev = 0
 				for i in range(0, len(data_raw), 2):
-					# convert from 8 kHz signed 16 bit to 16 kHz signed 16 bit le
+					# convert from 8 kHz signed 16 bit le to 16 kHz signed 16 bit le
 					v = struct.unpack_from('<h', data_raw, i)[0]
-					data += struct.pack('<hh', v, v)
+					data += struct.pack('<hh', int((prev + v) / 2), v)
+					prev = v
 			else:
 				data = data_raw
 			self.rltl.acquire(True)
